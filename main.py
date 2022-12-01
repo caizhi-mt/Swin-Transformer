@@ -108,7 +108,6 @@ def main(config):
         lr_scheduler = build_scheduler(config, optimizer, len(data_loader_train) // config.TRAIN.ACCUMULATION_STEPS)
     else:
         lr_scheduler = build_scheduler(config, optimizer, len(data_loader_train))
-
     if config.AUG.MIXUP > 0.:
         # smoothing is handled with mixup label transform
         criterion = SoftTargetCrossEntropy()
@@ -131,13 +130,12 @@ def main(config):
         else:
             logger.info(f'no checkpoint found in {config.OUTPUT}, ignoring auto resume')
 
-    #pdb.set_trace()
-    #if config.MODEL.RESUME:
-    #    max_accuracy = load_checkpoint(config, model_without_ddp, optimizer, lr_scheduler, loss_scaler, logger)
-    #    acc1, acc5, loss = validate(config, data_loader_val, model)
-    #    logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
-    #    if config.EVAL_MODE:
-    #        return
+    if config.MODEL.RESUME:
+        max_accuracy = load_checkpoint(config, model_without_ddp, optimizer, lr_scheduler, loss_scaler, logger)
+        acc1, acc5, loss = validate(config, data_loader_val, model)
+        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
+        if config.EVAL_MODE:
+            return
 
     if config.MODEL.PRETRAINED and (not config.MODEL.RESUME):
         load_pretrained(config, model_without_ddp, logger)
@@ -171,8 +169,6 @@ def main(config):
 
 def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mixup_fn, lr_scheduler, loss_scaler):
     model.train()
-    print(model)
-    pdb.set_trace()
     optimizer.zero_grad()
 
     num_steps = len(data_loader)
@@ -183,22 +179,12 @@ def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mix
 
     start = time.time()
     end = time.time()
-    aa = 1
     for idx, (samples, targets) in enumerate(data_loader):
-        if aa > 2:
-            break
-        aa = aa + 1
+        if mixup_fn is not None:
+            samples, targets = mixup_fn(samples, targets)
         samples = samples.to(config.DEVICE)
         targets = targets.to(config.DEVICE)
-        #if mixup_fn is not None:
-        #    samples, targets = mixup_fn(samples, targets)
-
-        #pdb.set_trace()
-        #print(samples)
-        #print(targets)
-        with torch.cuda.amp.autocast(enabled=config.AMP_ENABLE):
-            outputs = model(samples)
-        pdb.set_trace()
+        outputs = model(samples)
         loss = criterion(outputs, targets.to(torch.float32))
         loss = loss / config.TRAIN.ACCUMULATION_STEPS
 
@@ -210,7 +196,8 @@ def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mix
         if (idx + 1) % config.TRAIN.ACCUMULATION_STEPS == 0:
             optimizer.zero_grad()
             lr_scheduler.step_update((epoch * num_steps + idx) // config.TRAIN.ACCUMULATION_STEPS)
-        loss_scale_value = 1.0 # loss_scaler.state_dict()["scale"]
+        #loss_scale_value = loss_scaler.state_dict()["scale"]
+        loss_scale_value = 1.0
 
         #torch.cuda.synchronize()
 
@@ -255,16 +242,16 @@ def validate(config, data_loader, model):
         target = target.to(config.DEVICE)
 
         # compute output
-        with torch.cuda.amp.autocast(enabled=config.AMP_ENABLE):
-            output = model(images)
+        #with torch.cuda.amp.autocast(enabled=config.AMP_ENABLE):
+        output = model(images)
 
         # measure accuracy and record loss
         loss = criterion(output, target)
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
-        acc1 = reduce_tensor(acc1)
-        acc5 = reduce_tensor(acc5)
-        loss = reduce_tensor(loss)
+        #acc1 = reduce_tensor(acc1)
+        #acc5 = reduce_tensor(acc5)
+        #loss = reduce_tensor(loss)
 
         loss_meter.update(loss.item(), target.size(0))
         acc1_meter.update(acc1.item(), target.size(0))
@@ -350,10 +337,11 @@ if __name__ == '__main__':
     logger = create_logger(output_dir=config.OUTPUT, dist_rank=0, name=f"{config.MODEL.NAME}")
 
     #if dist.get_rank() == 0:
-    #    path = os.path.join(config.OUTPUT, "config.json")
-    #    with open(path, "w") as f:
-    #        f.write(config.dump())
-    #    logger.info(f"Full config saved to {path}")
+    if True:
+        path = os.path.join(config.OUTPUT, "config.json")
+        with open(path, "w") as f:
+            f.write(config.dump())
+        logger.info(f"Full config saved to {path}")
 
     # print config
     logger.info(config.dump())
