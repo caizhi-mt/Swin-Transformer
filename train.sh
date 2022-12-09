@@ -1,1 +1,1 @@
-MTGPU_MAX_MEM_USAGE_GB=9 python main.py --cfg configs/swinv2/swinv2_base_patch4_window8_256_tiny_imagenet.yaml --data-path /home/caizhi/tiny-imagenet-200 --batch-size 8 --disable_amp --local_rank -1 --device mtgpu
+MTGPU_MAX_MEM_USAGE_GB=9 python main.py --cfg configs/swinv2/swinv2_base_patch4_window8_128_tiny_imagenet.yaml --data-path /home/caizhi/tiny-imagenet-200 --batch-size 8 --disable_amp --local_rank -1 --device mtgpu

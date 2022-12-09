@@ -28,6 +28,7 @@ from data import build_loader
 from lr_scheduler import build_scheduler
 from optimizer import build_optimizer
 from logger import create_logger
+from torch.profiler import profile, record_function, ProfilerActivity, schedule
 from utils import load_checkpoint, load_pretrained, save_checkpoint, NativeScalerWithGradNormCount, auto_resume_helper, \
     reduce_tensor
 
@@ -179,13 +180,23 @@ def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mix
 
     start = time.time()
     end = time.time()
+
+    #with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+    #    record_shapes=True,
+    #    schedule=torch.profiler.schedule(
+    #    wait=10,
+    #    warmup=1,
+    #    active=3,
+    #    repeat=3),
+    #    on_trace_ready=torch.profiler.tensorboard_trace_handler('./cuda3080_swintransformer_bz14_profiler')) as p:
+
     for idx, (samples, targets) in enumerate(data_loader):
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
         samples = samples.to(config.DEVICE)
         targets = targets.to(config.DEVICE)
         outputs = model(samples)
-        loss = criterion(outputs, targets.to(torch.float32))
+        loss = criterion(outputs, targets)
         loss = loss / config.TRAIN.ACCUMULATION_STEPS
 
         # this attribute is added by timm on one optimizer (adahessian)
@@ -221,6 +232,7 @@ def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mix
                 f'grad_norm {norm_meter.val:.4f} ({norm_meter.avg:.4f})\t'
                 f'loss_scale {scaler_meter.val:.4f} ({scaler_meter.avg:.4f})\t'
                 )
+        p.step()
     epoch_time = time.time() - start
     logger.info(f"EPOCH {epoch} training takes {datetime.timedelta(seconds=int(epoch_time))}")
 
