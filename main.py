@@ -197,7 +197,8 @@ def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mix
         if (idx + 1) % config.TRAIN.ACCUMULATION_STEPS == 0:
             optimizer.zero_grad()
             lr_scheduler.step_update((epoch * num_steps + idx) // config.TRAIN.ACCUMULATION_STEPS)
-        loss_scale_value = loss_scaler.state_dict()["scale"]
+        #loss_scale_value = loss_scaler.state_dict()["scale"]
+        loss_scale_value = 1.0
 
         torch.cuda.synchronize()
 
@@ -310,7 +311,8 @@ if __name__ == '__main__':
     torch.distributed.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
     torch.distributed.barrier()
 
-    seed = config.SEED + dist.get_rank()
+    #seed = config.SEED + dist.get_rank()
+    seed = 123
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     np.random.seed(seed)

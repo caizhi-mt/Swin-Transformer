@@ -17,6 +17,7 @@ from timm.data import create_transform
 from .cached_image_folder import CachedImageFolder
 from .imagenet22k_dataset import IN22KDATASET
 from .samplers import SubsetRandomSampler
+import pdb
 
 try:
     from torchvision.transforms import InterpolationMode
@@ -56,7 +57,7 @@ def build_loader(config):
         sampler_train = SubsetRandomSampler(indices)
     else:
         sampler_train = torch.utils.data.DistributedSampler(
-            dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
+            dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=False
         )
 
     if config.TEST.SEQUENTIAL:
