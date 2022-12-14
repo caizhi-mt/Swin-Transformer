@@ -12,7 +12,8 @@ import torch.distributed as dist
 import horovod.torch as hvd
 from torchvision import datasets, transforms
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-from timm.data import Mixup
+#from timm.data import Mixup
+from .mixup import Mixup
 from timm.data import create_transform
 
 from .cached_image_folder import CachedImageFolder
@@ -91,7 +92,7 @@ def build_loader(config):
         mixup_fn = Mixup(
             mixup_alpha=config.AUG.MIXUP, cutmix_alpha=config.AUG.CUTMIX, cutmix_minmax=config.AUG.CUTMIX_MINMAX,
             prob=config.AUG.MIXUP_PROB, switch_prob=config.AUG.MIXUP_SWITCH_PROB, mode=config.AUG.MIXUP_MODE,
-            label_smoothing=config.MODEL.LABEL_SMOOTHING, num_classes=config.MODEL.NUM_CLASSES)
+            label_smoothing=config.MODEL.LABEL_SMOOTHING, num_classes=config.MODEL.NUM_CLASSES, device=config.DEVICE)
 
     return dataset_train, dataset_val, data_loader_train, data_loader_val, mixup_fn
 
@@ -123,6 +124,7 @@ def build_loader_hvd(config):
 
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train, sampler=sampler_train,
+        shuffle=True,
         batch_size=config.DATA.BATCH_SIZE,
         num_workers=config.DATA.NUM_WORKERS,
         pin_memory=config.DATA.PIN_MEMORY,
@@ -145,7 +147,7 @@ def build_loader_hvd(config):
         mixup_fn = Mixup(
             mixup_alpha=config.AUG.MIXUP, cutmix_alpha=config.AUG.CUTMIX, cutmix_minmax=config.AUG.CUTMIX_MINMAX,
             prob=config.AUG.MIXUP_PROB, switch_prob=config.AUG.MIXUP_SWITCH_PROB, mode=config.AUG.MIXUP_MODE,
-            label_smoothing=config.MODEL.LABEL_SMOOTHING, num_classes=config.MODEL.NUM_CLASSES)
+            label_smoothing=config.MODEL.LABEL_SMOOTHING, num_classes=config.MODEL.NUM_CLASSES, device=config.DEVICE)
 
     return dataset_train, dataset_val, data_loader_train, data_loader_val, mixup_fn
 
@@ -162,7 +164,7 @@ def build_dataset(is_train, config):
         else:
             root = os.path.join(config.DATA.DATA_PATH, prefix)
             dataset = datasets.ImageFolder(root, transform=transform)
-        nb_classes = 1000
+        nb_classes = 200
     elif config.DATA.DATASET == 'imagenet22K':
         prefix = 'ILSVRC2011fall_whole'
         if is_train:
