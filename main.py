@@ -232,9 +232,13 @@ def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mix
                 f'grad_norm {norm_meter.val:.4f} ({norm_meter.avg:.4f})\t'
                 f'loss_scale {scaler_meter.val:.4f} ({scaler_meter.avg:.4f})\t'
                 )
-        p.step()
+        #p.step()
     epoch_time = time.time() - start
     logger.info(f"EPOCH {epoch} training takes {datetime.timedelta(seconds=int(epoch_time))}")
+
+def save_np(tensor, name):
+    data = tensor.cpu().detach().numpy()
+    np.save(name, data, allow_pickle=True, fix_imports=True,)
 
 
 @torch.no_grad()
@@ -250,15 +254,27 @@ def validate(config, data_loader, model):
 
     end = time.time()
     for idx, (images, target) in enumerate(data_loader):
+        #pdb.set_trace()
+        #images = torch.tensor(np.load("/home/zhi.cai/Swin-Transformer_cuda/images.npy"))
+        #target = torch.tensor(np.load("/home/zhi.cai/Swin-Transformer_cuda/target.npy"))
         images = images.to(config.DEVICE)
         target = target.to(config.DEVICE)
 
         # compute output
         #with torch.cuda.amp.autocast(enabled=config.AMP_ENABLE):
         output = model(images)
+        #name = "/home/zhi.cai/Swin-Transformer_cuda/mtpytorch_debug/output_" + str(idx) + ".npy"
+        #save_np(output, name)
+        #save_np(output, "/home/zhi.cai/Swin-Transformer_cuda/output_mtpytorch.npy")
 
         # measure accuracy and record loss
         loss = criterion(output, target)
+        #cpu_output = output.cpu()
+        #pdb.set_trace()
+        #_, cpu_pred = cpu_output.topk(5, 1, True, True)
+        #_, pred = output.topk(5, 1, True, True)
+        #name = "/home/zhi.cai/Swin-Transformer_cuda/mtpytorch_debug/topk_output_" + str(idx) + ".npy"
+        #save_np(pred, name)
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
         #acc1 = reduce_tensor(acc1)
