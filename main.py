@@ -12,10 +12,12 @@ import random
 import argparse
 import datetime
 import numpy as np
+import pdb
 
 import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
+import musa_torch_extension
 
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from timm.utils import accuracy, AverageMeter
@@ -26,6 +28,7 @@ from data import build_loader
 from lr_scheduler import build_scheduler
 from optimizer import build_optimizer
 from logger import create_logger
+from torch.profiler import profile, record_function, ProfilerActivity, schedule
 from utils import load_checkpoint, load_pretrained, save_checkpoint, NativeScalerWithGradNormCount, auto_resume_helper, \
     reduce_tensor
 
@@ -43,6 +46,7 @@ def parse_option():
     # easy config modification
     parser.add_argument('--batch-size', type=int, help="batch size for single GPU")
     parser.add_argument('--data-path', type=str, help='path to dataset')
+    parser.add_argument('--device', type=str, help='cpu/mtgpu/cuda')
     parser.add_argument('--zip', action='store_true', help='use zipped dataset instead of folder dataset')
     parser.add_argument('--cache-mode', type=str, default='part', choices=['no', 'full', 'part'],
                         help='no: no cache, '
@@ -94,18 +98,17 @@ def main(config):
         flops = model.flops()
         logger.info(f"number of GFLOPs: {flops / 1e9}")
 
-    model.cuda()
+    model.to(config.DEVICE)
     model_without_ddp = model
 
     optimizer = build_optimizer(config, model)
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[config.LOCAL_RANK], broadcast_buffers=False)
+    #model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[config.LOCAL_RANK], broadcast_buffers=False)
     loss_scaler = NativeScalerWithGradNormCount()
 
     if config.TRAIN.ACCUMULATION_STEPS > 1:
         lr_scheduler = build_scheduler(config, optimizer, len(data_loader_train) // config.TRAIN.ACCUMULATION_STEPS)
     else:
         lr_scheduler = build_scheduler(config, optimizer, len(data_loader_train))
-
     if config.AUG.MIXUP > 0.:
         # smoothing is handled with mixup label transform
         criterion = SoftTargetCrossEntropy()
@@ -147,11 +150,11 @@ def main(config):
     logger.info("Start training")
     start_time = time.time()
     for epoch in range(config.TRAIN.START_EPOCH, config.TRAIN.EPOCHS):
-        data_loader_train.sampler.set_epoch(epoch)
+        #data_loader_train.sampler.set_epoch(epoch)
 
         train_one_epoch(config, model, criterion, data_loader_train, optimizer, epoch, mixup_fn, lr_scheduler,
                         loss_scaler)
-        if dist.get_rank() == 0 and (epoch % config.SAVE_FREQ == 0 or epoch == (config.TRAIN.EPOCHS - 1)):
+        if (epoch % config.SAVE_FREQ == 0 or epoch == (config.TRAIN.EPOCHS - 1)):
             save_checkpoint(config, epoch, model_without_ddp, max_accuracy, optimizer, lr_scheduler, loss_scaler,
                             logger)
 
@@ -177,15 +180,22 @@ def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mix
 
     start = time.time()
     end = time.time()
-    for idx, (samples, targets) in enumerate(data_loader):
-        samples = samples.cuda(non_blocking=True)
-        targets = targets.cuda(non_blocking=True)
 
+    #with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+    #    record_shapes=True,
+    #    schedule=torch.profiler.schedule(
+    #    wait=10,
+    #    warmup=1,
+    #    active=3,
+    #    repeat=3),
+    #    on_trace_ready=torch.profiler.tensorboard_trace_handler('./cuda3080_swintransformer_bz14_profiler')) as p:
+
+    for idx, (samples, targets) in enumerate(data_loader):
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
-
-        with torch.cuda.amp.autocast(enabled=config.AMP_ENABLE):
-            outputs = model(samples)
+        samples = samples.to(config.DEVICE)
+        targets = targets.to(config.DEVICE)
+        outputs = model(samples)
         loss = criterion(outputs, targets)
         loss = loss / config.TRAIN.ACCUMULATION_STEPS
 
@@ -197,9 +207,10 @@ def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mix
         if (idx + 1) % config.TRAIN.ACCUMULATION_STEPS == 0:
             optimizer.zero_grad()
             lr_scheduler.step_update((epoch * num_steps + idx) // config.TRAIN.ACCUMULATION_STEPS)
-        loss_scale_value = loss_scaler.state_dict()["scale"]
+        #loss_scale_value = loss_scaler.state_dict()["scale"]
+        loss_scale_value = 1.0
 
-        torch.cuda.synchronize()
+        #torch.cuda.synchronize()
 
         loss_meter.update(loss.item(), targets.size(0))
         if grad_norm is not None:  # loss_scaler return None if not update
@@ -211,7 +222,7 @@ def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mix
         if idx % config.PRINT_FREQ == 0:
             lr = optimizer.param_groups[0]['lr']
             wd = optimizer.param_groups[0]['weight_decay']
-            memory_used = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
+            #memory_used = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
             etas = batch_time.avg * (num_steps - idx)
             logger.info(
                 f'Train: [{epoch}/{config.TRAIN.EPOCHS}][{idx}/{num_steps}]\t'
@@ -220,13 +231,19 @@ def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mix
                 f'loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})\t'
                 f'grad_norm {norm_meter.val:.4f} ({norm_meter.avg:.4f})\t'
                 f'loss_scale {scaler_meter.val:.4f} ({scaler_meter.avg:.4f})\t'
-                f'mem {memory_used:.0f}MB')
+                )
+        #p.step()
     epoch_time = time.time() - start
     logger.info(f"EPOCH {epoch} training takes {datetime.timedelta(seconds=int(epoch_time))}")
+
+def save_np(tensor, name):
+    data = tensor.cpu().detach().numpy()
+    np.save(name, data, allow_pickle=True, fix_imports=True,)
 
 
 @torch.no_grad()
 def validate(config, data_loader, model):
+    print("======validate=======")
     criterion = torch.nn.CrossEntropyLoss()
     model.eval()
 
@@ -237,20 +254,32 @@ def validate(config, data_loader, model):
 
     end = time.time()
     for idx, (images, target) in enumerate(data_loader):
-        images = images.cuda(non_blocking=True)
-        target = target.cuda(non_blocking=True)
+        #pdb.set_trace()
+        #images = torch.tensor(np.load("/home/zhi.cai/Swin-Transformer_cuda/images.npy"))
+        #target = torch.tensor(np.load("/home/zhi.cai/Swin-Transformer_cuda/target.npy"))
+        images = images.to(config.DEVICE)
+        target = target.to(config.DEVICE)
 
         # compute output
-        with torch.cuda.amp.autocast(enabled=config.AMP_ENABLE):
-            output = model(images)
+        #with torch.cuda.amp.autocast(enabled=config.AMP_ENABLE):
+        output = model(images)
+        #name = "/home/zhi.cai/Swin-Transformer_cuda/mtpytorch_debug/output_" + str(idx) + ".npy"
+        #save_np(output, name)
+        #save_np(output, "/home/zhi.cai/Swin-Transformer_cuda/output_mtpytorch.npy")
 
         # measure accuracy and record loss
         loss = criterion(output, target)
+        #cpu_output = output.cpu()
+        #pdb.set_trace()
+        #_, cpu_pred = cpu_output.topk(5, 1, True, True)
+        #_, pred = output.topk(5, 1, True, True)
+        #name = "/home/zhi.cai/Swin-Transformer_cuda/mtpytorch_debug/topk_output_" + str(idx) + ".npy"
+        #save_np(pred, name)
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
-        acc1 = reduce_tensor(acc1)
-        acc5 = reduce_tensor(acc5)
-        loss = reduce_tensor(loss)
+        #acc1 = reduce_tensor(acc1)
+        #acc5 = reduce_tensor(acc5)
+        #loss = reduce_tensor(loss)
 
         loss_meter.update(loss.item(), target.size(0))
         acc1_meter.update(acc1.item(), target.size(0))
@@ -261,14 +290,13 @@ def validate(config, data_loader, model):
         end = time.time()
 
         if idx % config.PRINT_FREQ == 0:
-            memory_used = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
+            #memory_used = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
             logger.info(
                 f'Test: [{idx}/{len(data_loader)}]\t'
                 f'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                 f'Loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})\t'
                 f'Acc@1 {acc1_meter.val:.3f} ({acc1_meter.avg:.3f})\t'
-                f'Acc@5 {acc5_meter.val:.3f} ({acc5_meter.avg:.3f})\t'
-                f'Mem {memory_used:.0f}MB')
+                f'Acc@5 {acc5_meter.val:.3f} ({acc5_meter.avg:.3f})\t')
     logger.info(f' * Acc@1 {acc1_meter.avg:.3f} Acc@5 {acc5_meter.avg:.3f}')
     return acc1_meter.avg, acc5_meter.avg, loss_meter.avg
 
@@ -306,21 +334,22 @@ if __name__ == '__main__':
     else:
         rank = -1
         world_size = -1
-    torch.cuda.set_device(config.LOCAL_RANK)
-    torch.distributed.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
-    torch.distributed.barrier()
+    #torch.cuda.set_device(config.LOCAL_RANK)
+    #torch.distributed.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
+    #torch.distributed.barrier()
 
-    seed = config.SEED + dist.get_rank()
+    #seed = config.SEED + dist.get_rank()
+    seed = 123
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
+    #torch.cuda.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    cudnn.benchmark = True
+    #cudnn.benchmark = True
 
     # linear scale the learning rate according to total batch size, may not be optimal
-    linear_scaled_lr = config.TRAIN.BASE_LR * config.DATA.BATCH_SIZE * dist.get_world_size() / 512.0
-    linear_scaled_warmup_lr = config.TRAIN.WARMUP_LR * config.DATA.BATCH_SIZE * dist.get_world_size() / 512.0
-    linear_scaled_min_lr = config.TRAIN.MIN_LR * config.DATA.BATCH_SIZE * dist.get_world_size() / 512.0
+    linear_scaled_lr = config.TRAIN.BASE_LR * config.DATA.BATCH_SIZE / 512.0
+    linear_scaled_warmup_lr = config.TRAIN.WARMUP_LR * config.DATA.BATCH_SIZE / 512.0
+    linear_scaled_min_lr = config.TRAIN.MIN_LR * config.DATA.BATCH_SIZE / 512.0
     # gradient accumulation also need to scale the learning rate
     if config.TRAIN.ACCUMULATION_STEPS > 1:
         linear_scaled_lr = linear_scaled_lr * config.TRAIN.ACCUMULATION_STEPS
@@ -333,9 +362,10 @@ if __name__ == '__main__':
     config.freeze()
 
     os.makedirs(config.OUTPUT, exist_ok=True)
-    logger = create_logger(output_dir=config.OUTPUT, dist_rank=dist.get_rank(), name=f"{config.MODEL.NAME}")
+    logger = create_logger(output_dir=config.OUTPUT, dist_rank=0, name=f"{config.MODEL.NAME}")
 
-    if dist.get_rank() == 0:
+    #if dist.get_rank() == 0:
+    if True:
         path = os.path.join(config.OUTPUT, "config.json")
         with open(path, "w") as f:
             f.write(config.dump())
