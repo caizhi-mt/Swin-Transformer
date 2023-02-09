@@ -124,7 +124,6 @@ def build_loader_hvd(config):
 
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train, sampler=sampler_train,
-        shuffle=True,
         batch_size=config.DATA.BATCH_SIZE,
         num_workers=config.DATA.NUM_WORKERS,
         pin_memory=config.DATA.PIN_MEMORY,
